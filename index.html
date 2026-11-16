@@ -188,7 +188,9 @@ const plural = (n, a, b) => n + " " + (n === 1 ? a : b);
 const byName = (a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es");
 const normUser = (u) => String(u || "").trim().toLowerCase().replace(/\s+/g, "");
 const USER_RE = /^[a-z0-9._-]{3,30}$/;
-const ROLES = { admin: "Administrador", pastor: "Pastor", lider: "Líder de célula" };
+const ROLES = { admin: "Administrador", pastor: "Pastor", lider: "Líder de célula", maestro: "Maestro · Nivel 2" };
+const NIVELES = { 1: { titulo: "Discipulado · Nivel 1", sub: "Lunes · 8:00 PM · 1 Oak Ridge Ct, Pomona, NY 10970" }, 2: { titulo: "Discipulado · Nivel 2", sub: "Maestro: Jorge Flores" } };
+const col = (k) => (state.nivel === 2 ? "disc2_" : "disc_") + k;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600); }
 async function hashOf(usuario, clave) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("bethesda|" + usuario + "|" + clave));
@@ -202,25 +204,26 @@ function summarize(m, alumnos) {
 
 /* ---------- modo de prueba (sin Firebase) */
 function demoStore() {
-  const KEY = "discipulado-bethesda-demo", SKEY = "discipulado-bethesda-sesion";
+  const KEY = "discipulado-bethesda-demo2", SKEY = "discipulado-bethesda-sesion";
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } };
   const save = (x) => { try { localStorage.setItem(KEY, JSON.stringify(x)); } catch {} };
-  let s = load() || { users: { diego: { nombre: "Diego", rol: "admin", clave: "2287" }, nery: { nombre: "Pastor Nery Aldana", rol: "pastor", clave: "bethesda" } }, alumnos: [], clases: {} };
+  let s = load() || { users: { diego: { nombre: "Diego", rol: "admin", clave: "2287" }, nery: { nombre: "Pastor Nery Aldana", rol: "pastor", clave: "bethesda" }, jorgeflores: { nombre: "Jorge Flores", rol: "maestro", nivel: 2, clave: "bethesda" } }, disc_alumnos: [], disc_clases: {}, disc2_alumnos: [], disc2_clases: {} };
+  const A = () => (s[col("alumnos")] ||= []), K = () => (s[col("clases")] ||= {});
   const clone = (x) => JSON.parse(JSON.stringify(x));
   let me = null;
-  const asMe = (u) => { const d = s.users[u]; return d ? { usuario: u, nombre: d.nombre, rol: d.rol } : null; };
+  const asMe = (u) => { const d = s.users[u]; return d ? { usuario: u, nombre: d.nombre, rol: d.rol, nivel: d.nivel || null } : null; };
   return {
     mode: "demo",
     async login(u, c) { u = normUser(u); const d = s.users[u]; if (!d || d.clave !== c) throw { code: "bad-login" }; try { localStorage.setItem(SKEY, u); } catch {} return (me = asMe(u)); },
     async current() { let u = null; try { u = localStorage.getItem(SKEY); } catch {} return (me = u ? asMe(u) : null); },
     async signOut() { try { localStorage.removeItem(SKEY); } catch {} },
-    async alumnos() { return clone(s.alumnos).sort(byName); },
-    async saveAlumno(a) { if (a.id) { const i = s.alumnos.findIndex((x) => x.id === a.id); s.alumnos[i] = { ...s.alumnos[i], ...a }; } else s.alumnos.push({ ...a, id: Math.random().toString(36).slice(2, 10) }); save(s); },
-    async deleteAlumno(id) { s.alumnos = s.alumnos.filter((a) => a.id !== id); save(s); },
-    async clase(f) { return clone(s.clases[f] || null); },
-    async saveClase(f, d) { s.clases[f] = d; save(s); },
-    async deleteClase(f) { delete s.clases[f]; save(s); },
-    async clases(n = 60) { return Object.values(s.clases).sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, n).map(clone); },
+    async alumnos() { return clone(A()).sort(byName); },
+    async saveAlumno(a) { const L = A(); if (a.id) { const i = L.findIndex((x) => x.id === a.id); L[i] = { ...L[i], ...a }; } else L.push({ ...a, id: Math.random().toString(36).slice(2, 10) }); save(s); },
+    async deleteAlumno(id) { s[col("alumnos")] = A().filter((a) => a.id !== id); save(s); },
+    async clase(f) { return clone(K()[f] || null); },
+    async saveClase(f, d) { K()[f] = d; save(s); },
+    async deleteClase(f) { delete K()[f]; save(s); },
+    async clases(n = 60) { return Object.values(K()).sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, n).map(clone); },
     watch(cb) { const h = (e) => { if (e.key === KEY) { s = load() || s; cb(); } }; addEventListener("storage", h); return () => removeEventListener("storage", h); },
   };
 }
@@ -235,7 +238,7 @@ async function firebaseStore(cfg) {
   await new Promise((res) => { const off = A.onAuthStateChanged(auth, () => { off(); res(); }); });
   const ensureAnon = async () => { if (!auth.currentUser) await A.signInAnonymously(auth); return auth.currentUser.uid; };
   const D = (...p) => F.doc(db, ...p);
-  const asMe = (u, d) => ({ usuario: u, nombre: d.nombre || u, rol: d.rol });
+  const asMe = (u, d) => ({ usuario: u, nombre: d.nombre || u, rol: d.rol, nivel: Number(d.nivel) || null });
   return {
     mode: "firebase",
     async login(usuario, clave) {
@@ -260,22 +263,23 @@ async function firebaseStore(cfg) {
       } catch { return null; }
     },
     async signOut() { try { await F.deleteDoc(D("sesiones", auth.currentUser.uid)); } catch {} },
-    async alumnos() { const sn = await F.getDocs(F.collection(db, "disc_alumnos")); return sn.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byName); },
-    async saveAlumno(a) { const { id, ...body } = a; if (id) await F.setDoc(D("disc_alumnos", id), body, { merge: true }); else await F.addDoc(F.collection(db, "disc_alumnos"), body); },
-    async deleteAlumno(id) { await F.deleteDoc(D("disc_alumnos", id)); },
-    async clase(f) { const d = await F.getDoc(D("disc_clases", f)); return d.exists() ? d.data() : null; },
-    async saveClase(f, data) { await F.setDoc(D("disc_clases", f), data); },
-    async deleteClase(f) { await F.deleteDoc(D("disc_clases", f)); },
-    async clases(n = 60) { const sn = await F.getDocs(F.query(F.collection(db, "disc_clases"), F.orderBy("fecha", "desc"), F.limit(n))); return sn.docs.map((d) => d.data()); },
-    watch(cb) { let first = true; return F.onSnapshot(F.collection(db, "disc_clases"), () => { if (first) { first = false; return; } cb(); }, () => {}); },
+    async alumnos() { const sn = await F.getDocs(F.collection(db, col("alumnos"))); return sn.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byName); },
+    async saveAlumno(a) { const { id, ...body } = a; if (id) await F.setDoc(D(col("alumnos"), id), body, { merge: true }); else await F.addDoc(F.collection(db, col("alumnos")), body); },
+    async deleteAlumno(id) { await F.deleteDoc(D(col("alumnos"), id)); },
+    async clase(f) { const d = await F.getDoc(D(col("clases"), f)); return d.exists() ? d.data() : null; },
+    async saveClase(f, data) { await F.setDoc(D(col("clases"), f), data); },
+    async deleteClase(f) { await F.deleteDoc(D(col("clases"), f)); },
+    async clases(n = 60) { const sn = await F.getDocs(F.query(F.collection(db, col("clases")), F.orderBy("fecha", "desc"), F.limit(n))); return sn.docs.map((d) => d.data()); },
+    watch(cb) { let first = true; return F.onSnapshot(F.collection(db, col("clases")), () => { if (first) { first = false; return; } cb(); }, () => {}); },
   };
 }
 
 /* ---------- app */
 let store, me, unwatch = null;
 const stopWatch = () => { if (unwatch) { unwatch(); unwatch = null; } };
-const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false };
-const readOnly = () => me.rol !== "admin" && me.rol !== "pastor";
+const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false, nivel: 1 };
+const readOnly = () => !["admin", "pastor", "maestro"].includes(me.rol);
+const canPick = () => me.rol === "admin" || me.rol === "pastor";
 const savebar = { el: $("#savebar"), info: $("#savebar-info"), btn: $("#savebar-btn"), show(info, label, fn) { this.info.textContent = info; this.btn.textContent = label; this.btn.onclick = fn; this.btn.disabled = false; this.el.hidden = false; }, hide() { this.el.hidden = true; } };
 
 function errMsg(e) {
@@ -296,7 +300,9 @@ async function boot() {
 }
 
 function start() {
-  if (me.rol !== "admin" && me.rol !== "pastor") { store.signOut(); return showLogin("Este usuario no tiene acceso al discipulado."); }
+  if (readOnly() || (me.rol === "maestro" && !NIVELES[me.nivel])) { store.signOut(); return showLogin("Este usuario no tiene acceso al discipulado."); }
+  if (me.rol === "maestro") state.nivel = me.nivel;
+  else { let n = 1; try { n = Number(localStorage.getItem("disc-nivel")) || 1; } catch {} state.nivel = NIVELES[n] ? n : 1; }
   $("#who").hidden = false;
   $("#who-name").innerHTML = `<b>${esc(me.nombre)}</b><br>${esc(ROLES[me.rol] || "")}`;
   $("#logout").onclick = async () => { stopWatch(); await store.signOut(); me = null; $("#who").hidden = true; showLogin(); };
@@ -311,6 +317,7 @@ async function seed() {
   try {
     let done = false; try { done = localStorage.getItem("disc-alumnos-cargados") === "1"; } catch {}
     if (done) return;
+    if (state.nivel !== 1) return;
     const actuales = await store.alumnos();
     if (!actuales.length) for (const n of ALUMNOS_INICIALES) await store.saveAlumno({ nombre: n, telefono: "", creado: new Date().toISOString() });
     try { localStorage.setItem("disc-alumnos-cargados", "1"); } catch {}
@@ -321,13 +328,13 @@ function showLogin(msg) {
   stopWatch(); savebar.hide();
   app.innerHTML = `<div class="login"><form class="card" id="lf" novalidate>
     <h2>Entrar</h2>
-    <p class="sub">Usa el mismo usuario y clave del sistema de células.</p>
-    <div class="field" style="width:100%;text-align:left"><label for="l-user">Usuario</label><input id="l-user" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Ej. diego"></div>
+    <p class="sub">Escribe tu usuario y tu clave.</p>
+    <div class="field" style="width:100%;text-align:left"><label for="l-user">Usuario</label><input id="l-user" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Ej. jorge flores"></div>
     <div class="field" style="width:100%;text-align:left"><label for="l-pass">Clave</label><input id="l-pass" type="password" autocomplete="current-password" placeholder="Tu clave"></div>
     <label class="sub" style="display:flex;gap:6px;align-items:center;justify-self:start;margin:0"><input type="checkbox" id="l-show"> Mostrar clave</label>
     <button class="btn primary" type="submit" style="width:100%">Entrar</button>
     <p class="err" id="l-err" ${msg ? "" : "hidden"}>${esc(msg || "")}</p>
-    ${store.mode === "demo" ? `<div class="hint">Usuarios de prueba: <b>diego</b> / 2287 · <b>nery</b> / bethesda</div>` : ""}
+    ${store.mode === "demo" ? `<div class="hint">Usuarios de prueba: <b>diego</b> / 2287 · <b>nery</b> / bethesda · <b>jorge flores</b> / bethesda</div>` : ""}
   </form></div>`;
   $("#l-show").onchange = (e) => ($("#l-pass").type = e.target.checked ? "text" : "password");
   setTimeout(() => $("#l-user").focus(), 30);
@@ -344,10 +351,12 @@ async function render() {
   const tabs = readOnly() ? [["historial", "Historial"], ["asistencia", "Ver clase"], ["alumnos", "Alumnos"]] : [["asistencia", "Asistencia"], ["alumnos", "Alumnos"], ["historial", "Historial"]];
   if (!tabs.some(([k]) => k === state.tab)) state.tab = tabs[0][0];
   app.innerHTML = `
-    <div><h2>Discipulado de los lunes <span class="live" title="Se actualiza solo">● En vivo</span></h2>
-      <p class="sub">Lunes · 8:00 PM · 1 Oak Ridge Ct, Pomona, NY 10970</p></div>
+    ${canPick() ? `<div class="tabs" role="tablist" aria-label="Nivel" style="grid-template-columns:1fr 1fr">${[1, 2].map((n) => `<button role="tab" type="button" data-nivel="${n}" aria-selected="${state.nivel === n}">Nivel ${n}</button>`).join("")}</div>` : ""}
+    <div><h2>${NIVELES[state.nivel].titulo} <span class="live" title="Se actualiza solo">● En vivo</span></h2>
+      <p class="sub">${NIVELES[state.nivel].sub}</p></div>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" type="button" data-tab="${k}" aria-selected="${state.tab === k}">${l}</button>`).join("")}</div>
     <div id="pane"><div class="empty"><div class="spinner"></div></div></div>`;
+  app.querySelectorAll("[data-nivel]").forEach((b) => (b.onclick = () => { const n = Number(b.dataset.nivel); if (n === state.nivel) return; state.nivel = n; try { localStorage.setItem("disc-nivel", String(n)); } catch {} state.fecha = lastMonday(); state.loadSaved = false; seed().then(render); }));
   app.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; if (b.dataset.tab === "asistencia") { state.fecha = lastMonday(); state.loadSaved = false; } render(); }));
   try {
     if (state.tab === "asistencia") await (readOnly() ? paneVer() : paneAsistencia());
