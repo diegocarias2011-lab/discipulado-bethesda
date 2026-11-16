@@ -189,7 +189,7 @@ const byName = (a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es");
 const normUser = (u) => String(u || "").trim().toLowerCase().replace(/\s+/g, "");
 const USER_RE = /^[a-z0-9._-]{3,30}$/;
 const ROLES = { admin: "Administrador", pastor: "Pastor", lider: "Líder de célula", maestro: "Maestro · Nivel 2" };
-const NIVELES = { 1: { titulo: "Discipulado · Nivel 1", sub: "Lunes · 8:00 PM · 1 Oak Ridge Ct, Pomona, NY 10970" }, 2: { titulo: "Discipulado · Nivel 2", sub: "Maestro: Jorge Flores" } };
+const NIVELES = { 2: { titulo: "Discipulado · Nivel 2", sub: "Maestro: Jorge Flores" }, 3: { titulo: "Discipulado · Nivel 3", sub: "Pastor Nery Aldana · Lunes 8:00 PM · 1 Oak Ridge Ct, Pomona, NY 10970" } };
 const col = (k) => (state.nivel === 2 ? "disc2_" : "disc_") + k;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600); }
 async function hashOf(usuario, clave) {
@@ -277,7 +277,7 @@ async function firebaseStore(cfg) {
 /* ---------- app */
 let store, me, unwatch = null;
 const stopWatch = () => { if (unwatch) { unwatch(); unwatch = null; } };
-const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false, nivel: 1 };
+const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false, nivel: 3 };
 const readOnly = () => !["admin", "pastor", "maestro"].includes(me.rol);
 const canPick = () => me.rol === "admin" || me.rol === "pastor";
 const savebar = { el: $("#savebar"), info: $("#savebar-info"), btn: $("#savebar-btn"), show(info, label, fn) { this.info.textContent = info; this.btn.textContent = label; this.btn.onclick = fn; this.btn.disabled = false; this.el.hidden = false; }, hide() { this.el.hidden = true; } };
@@ -302,7 +302,7 @@ async function boot() {
 function start() {
   if (readOnly() || (me.rol === "maestro" && !NIVELES[me.nivel])) { store.signOut(); return showLogin("Este usuario no tiene acceso al discipulado."); }
   if (me.rol === "maestro") state.nivel = me.nivel;
-  else { let n = 1; try { n = Number(localStorage.getItem("disc-nivel")) || 1; } catch {} state.nivel = NIVELES[n] ? n : 1; }
+  else { let n = 3; try { n = Number(localStorage.getItem("disc-nivel")) || 3; } catch {} state.nivel = NIVELES[n] ? n : 3; }
   $("#who").hidden = false;
   $("#who-name").innerHTML = `<b>${esc(me.nombre)}</b><br>${esc(ROLES[me.rol] || "")}`;
   $("#logout").onclick = async () => { stopWatch(); await store.signOut(); me = null; $("#who").hidden = true; showLogin(); };
@@ -317,7 +317,7 @@ async function seed() {
   try {
     let done = false; try { done = localStorage.getItem("disc-alumnos-cargados") === "1"; } catch {}
     if (done) return;
-    if (state.nivel !== 1) return;
+    if (state.nivel !== 3) return;
     const actuales = await store.alumnos();
     if (!actuales.length) for (const n of ALUMNOS_INICIALES) await store.saveAlumno({ nombre: n, telefono: "", creado: new Date().toISOString() });
     try { localStorage.setItem("disc-alumnos-cargados", "1"); } catch {}
@@ -351,7 +351,7 @@ async function render() {
   const tabs = readOnly() ? [["historial", "Historial"], ["asistencia", "Ver clase"], ["alumnos", "Alumnos"]] : [["asistencia", "Asistencia"], ["alumnos", "Alumnos"], ["historial", "Historial"]];
   if (!tabs.some(([k]) => k === state.tab)) state.tab = tabs[0][0];
   app.innerHTML = `
-    ${canPick() ? `<div class="tabs" role="tablist" aria-label="Nivel" style="grid-template-columns:1fr 1fr">${[1, 2].map((n) => `<button role="tab" type="button" data-nivel="${n}" aria-selected="${state.nivel === n}">Nivel ${n}</button>`).join("")}</div>` : ""}
+    ${canPick() ? `<div class="tabs" role="tablist" aria-label="Nivel" style="grid-template-columns:1fr 1fr">${[2, 3].map((n) => `<button role="tab" type="button" data-nivel="${n}" aria-selected="${state.nivel === n}">Nivel ${n}</button>`).join("")}</div>` : ""}
     <div><h2>${NIVELES[state.nivel].titulo} <span class="live" title="Se actualiza solo">● En vivo</span></h2>
       <p class="sub">${NIVELES[state.nivel].sub}</p></div>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" type="button" data-tab="${k}" aria-selected="${state.tab === k}">${l}</button>`).join("")}</div>
