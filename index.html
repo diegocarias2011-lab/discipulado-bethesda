@@ -219,6 +219,7 @@ function demoStore() {
     async deleteAlumno(id) { s.alumnos = s.alumnos.filter((a) => a.id !== id); save(s); },
     async clase(f) { return clone(s.clases[f] || null); },
     async saveClase(f, d) { s.clases[f] = d; save(s); },
+    async deleteClase(f) { delete s.clases[f]; save(s); },
     async clases(n = 60) { return Object.values(s.clases).sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, n).map(clone); },
     watch(cb) { const h = (e) => { if (e.key === KEY) { s = load() || s; cb(); } }; addEventListener("storage", h); return () => removeEventListener("storage", h); },
   };
@@ -264,6 +265,7 @@ async function firebaseStore(cfg) {
     async deleteAlumno(id) { await F.deleteDoc(D("disc_alumnos", id)); },
     async clase(f) { const d = await F.getDoc(D("disc_clases", f)); return d.exists() ? d.data() : null; },
     async saveClase(f, data) { await F.setDoc(D("disc_clases", f), data); },
+    async deleteClase(f) { await F.deleteDoc(D("disc_clases", f)); },
     async clases(n = 60) { const sn = await F.getDocs(F.query(F.collection(db, "disc_clases"), F.orderBy("fecha", "desc"), F.limit(n))); return sn.docs.map((d) => d.data()); },
     watch(cb) { let first = true; return F.onSnapshot(F.collection(db, "disc_clases"), () => { if (first) { first = false; return; } cb(); }, () => {}); },
   };
@@ -365,6 +367,7 @@ async function paneVer() {
   if (!m) { pane.innerHTML = `<div class="grid">${dateRow()}<div class="empty"><strong>No hay asistencia de esta fecha</strong>Escoge otro lunes o revisa el Historial.</div></div>`; bindDate(); return; }
   pane.innerHTML = `<div class="grid">${dateRow()}
     <div class="stats"><div class="stat ok"><b>${m.presentes}</b><span>Presentes</span></div><div class="stat no"><b>${m.ausentes}</b><span>Ausentes</span></div></div>
+    ${m.tema ? `<div class="card"><div class="sub" style="margin:0">Tema de la clase</div><b>${esc(m.tema)}</b></div>` : ""}
     <div class="att">${alumnos.map((p) => { const v = m.asistencia?.[p.id]; return `<div class="att-row ${v || ""}"><div class="nm">${esc(p.nombre)}</div><span class="tag" style="${v === "p" ? "background:var(--ok);color:#fff" : v === "a" ? "background:var(--no);color:#fff" : ""}">${v === "p" ? "Presente" : v === "a" ? "Ausente" : "Sin marcar"}</span></div>`; }).join("")}</div>
     </div>`;
   bindDate();
@@ -382,6 +385,7 @@ async function paneAsistencia() {
     ${notLunes ? `<div class="notice"><span>Esta fecha no es lunes. Revisa que sea la fecha correcta.</span></div>` : ""}
     ${existing && !useSaved ? `<div class="notice"><span>Esta clase ya tiene asistencia guardada (${plural(existing.presentes, "presente", "presentes")}). Si guardas de nuevo, se reemplaza.</span><button class="btn small" id="loadsaved" type="button">Ver y corregir la guardada</button></div>` : ""}
     <div class="stats"><div class="stat ok"><b id="n-p">0</b><span>Presentes</span></div><div class="stat no"><b id="n-a">0</b><span>Ausentes</span></div><div class="stat"><b id="n-s">0</b><span>Sin marcar</span></div></div>
+    <div class="field"><label for="tema">Tema de la clase</label><input id="tema" value="${esc(useSaved ? existing.tema : "")}" placeholder="Ej. El amor de Cristo" maxlength="120"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" id="allp" type="button">Todos presentes</button><button class="btn small" id="clear" type="button">Borrar marcas</button></div>
     <div class="att" id="att"></div>
     </div>`;
@@ -411,7 +415,7 @@ async function paneAsistencia() {
   async function save() {
     if (!alumnos.some((m) => att[m.id])) { toast("Marca al menos a una persona"); return; }
     savebar.btn.disabled = true; savebar.btn.textContent = "Guardando…";
-    const data = summarize({ fecha: state.fecha, asistencia: att, por: me.usuario }, alumnos);
+    const data = summarize({ fecha: state.fecha, asistencia: att, tema: $("#tema").value.trim(), por: me.usuario }, alumnos);
     try { await store.saveClase(state.fecha, data); state.loadSaved = false; toast(`Guardado: ${plural(data.presentes, "presente", "presentes")}, ${plural(data.ausentes, "ausente", "ausentes")}`); render(); }
     catch (e) { toast(errMsg(e)); counts(); }
   }
@@ -473,10 +477,15 @@ async function paneHistorial() {
     $("#pl").appendChild(it);
   });
   ms.forEach((m) => {
-    const it = document.createElement("button"); it.type = "button"; it.className = "item"; it.style.cursor = "pointer"; it.style.textAlign = "left";
+    const it = document.createElement("div"); it.className = "item";
     const pct = m.total ? Math.round(m.presentes / m.total * 100) : 0;
-    it.innerHTML = `<div class="grow"><b>${esc(cap(fmtFecha(m.fecha)))}</b><small>${plural(m.presentes, "presente", "presentes")} · ${plural(m.ausentes, "ausente", "ausentes")}</small></div><span class="pct ${pct >= 70 ? "good" : pct < 50 ? "low" : ""}">${pct}%</span>`;
-    it.onclick = () => { state.fecha = m.fecha; state.loadSaved = true; state.tab = "asistencia"; render(); };
+    it.innerHTML = `<button type="button" class="grow open" style="all:unset;flex:1;min-width:0;cursor:pointer"><b>${esc(cap(fmtFecha(m.fecha)))}</b>${m.tema ? `<small style="display:block;color:var(--gold)">Tema: ${esc(m.tema)}</small>` : ""}<small style="display:block">${plural(m.presentes, "presente", "presentes")} · ${plural(m.ausentes, "ausente", "ausentes")}</small></button><span class="pct ${pct >= 70 ? "good" : pct < 50 ? "low" : ""}">${pct}%</span>${me.rol === "admin" ? `<button type="button" class="btn small del" style="color:var(--no)">Borrar</button>` : ""}`;
+    it.querySelector(".open").onclick = () => { state.fecha = m.fecha; state.loadSaved = true; state.tab = "asistencia"; render(); };
+    const del = it.querySelector(".del");
+    if (del) del.onclick = () => {
+      del.textContent = "¿Seguro? Borrar"; del.style.background = "var(--no)"; del.style.color = "#fff";
+      del.onclick = async () => { try { await store.deleteClase(m.fecha); toast("Clase borrada"); render(); } catch (e) { toast(errMsg(e)); } };
+    };
     $("#hl").appendChild(it);
   });
 }
