@@ -279,7 +279,7 @@ let store, me, unwatch = null;
 const stopWatch = () => { if (unwatch) { unwatch(); unwatch = null; } };
 const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false, nivel: 3 };
 const readOnly = () => !["admin", "pastor", "maestro"].includes(me.rol);
-const canPick = () => me.rol === "admin" || me.rol === "pastor";
+const canPick = () => me.rol === "admin";
 const savebar = { el: $("#savebar"), info: $("#savebar-info"), btn: $("#savebar-btn"), show(info, label, fn) { this.info.textContent = info; this.btn.textContent = label; this.btn.onclick = fn; this.btn.disabled = false; this.el.hidden = false; }, hide() { this.el.hidden = true; } };
 
 function errMsg(e) {
@@ -302,6 +302,7 @@ async function boot() {
 function start() {
   if (readOnly() || (me.rol === "maestro" && !NIVELES[me.nivel])) { store.signOut(); return showLogin("Este usuario no tiene acceso al discipulado."); }
   if (me.rol === "maestro") state.nivel = me.nivel;
+  else if (me.rol === "pastor") state.nivel = 3;
   else { let n = 3; try { n = Number(localStorage.getItem("disc-nivel")) || 3; } catch {} state.nivel = NIVELES[n] ? n : 3; }
   $("#who").hidden = false;
   $("#who-name").innerHTML = `<b>${esc(me.nombre)}</b><br>${esc(ROLES[me.rol] || "")}`;
