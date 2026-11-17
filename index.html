@@ -467,6 +467,58 @@ async function paneAlumnos() {
   };
 }
 
+/* respaldo: todo el discipulado en PDF para la computadora (solo el administrador) */
+async function datosNivel(n) {
+  const prev = state.nivel; state.nivel = n;
+  try { const [ms, al] = await Promise.all([store.clases(1000), store.alumnos()]); return { ms: ms.sort((a, b) => a.fecha.localeCompare(b.fecha)), al }; }
+  finally { state.nivel = prev; }
+}
+function reporteHTML(niveles) {
+  const e = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const fd = (f) => f.slice(8, 10) + "/" + f.slice(5, 7) + "/" + f.slice(0, 4);
+  const hoy = new Date().toLocaleDateString("es-US", { day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit" });
+  const secc = niveles.map(({ n, ms, al }) => {
+    if (!ms.length) return `<section><h2>Discipulado · Nivel ${n}</h2><p class="muted">Todavía no hay clases guardadas.</p></section>`;
+    const tot = ms.reduce((a, m) => a + (m.total ? m.presentes / m.total : 0), 0) / ms.length;
+    const clases = `<table><thead><tr><th>Fecha</th><th>Tema de la clase</th><th class="c">Presentes</th><th class="c">Ausentes</th><th class="c">%</th></tr></thead><tbody>${ms.map((m) => `<tr><td>${fd(m.fecha)}</td><td>${e(m.tema) || "—"}</td><td class="c">${m.presentes || 0}</td><td class="c">${m.ausentes || 0}</td><td class="c">${m.total ? Math.round(m.presentes / m.total * 100) : 0}%</td></tr>`).join("")}</tbody></table>`;
+    const chunks = []; for (let i = 0; i < ms.length; i += 10) chunks.push(ms.slice(i, i + 10));
+    const matriz = chunks.map((ch, ci) => `<table class="m"><thead><tr><th>Alumno</th>${ch.map((m) => `<th class="c">${fd(m.fecha).slice(0, 5)}</th>`).join("")}${ci === chunks.length - 1 ? `<th class="c">Vino</th><th class="c">%</th>` : ""}</tr></thead><tbody>${al.map((a) => {
+      const all = ms.map((m) => m.asistencia?.[a.id]); const vino = all.filter((v) => v === "p").length, de = all.filter(Boolean).length;
+      return `<tr><td>${e(a.nombre)}</td>${ch.map((m) => { const v = m.asistencia?.[a.id]; return `<td class="c ${v === "p" ? "p" : v === "a" ? "a" : ""}">${v === "p" ? "Presente" : v === "a" ? "Ausente" : "—"}</td>`; }).join("")}${ci === chunks.length - 1 ? `<td class="c"><b>${vino} de ${de}</b></td><td class="c"><b>${de ? Math.round(vino / de * 100) : 0}%</b></td>` : ""}</tr>`;
+    }).join("")}</tbody></table>`).join("");
+    return `<section><h2>Discipulado · Nivel ${n}</h2><p class="muted">${ms.length} ${ms.length === 1 ? "clase" : "clases"} · ${al.length} alumnos · asistencia promedio ${Math.round(tot * 100)}%</p><h3>Clases</h3>${clases}<h3>Asistencia por alumno</h3>${matriz}</section>`;
+  }).join("");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Respaldo Discipulado Bethesda ${todayISO()}</title><style>
+@page { size: letter landscape; margin: 12mm; }
+* { box-sizing: border-box; } body { font: 12px/1.4 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #10203f; margin: 0; padding: 18px; background: #fff; }
+header { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #e2b248; padding-bottom: 10px; margin-bottom: 6px; }
+header img { width: 56px; height: 56px; border-radius: 50%; } h1 { margin: 0; font-size: 20px; color: #0a2a6e; } .muted { color: #5a6a88; margin: 2px 0 8px; }
+h2 { color: #0a2a6e; font-size: 17px; margin: 18px 0 2px; } h3 { font-size: 13px; margin: 12px 0 6px; color: #1c4aa8; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: auto; } tr { page-break-inside: avoid; }
+th { background: #0a2a6e; color: #fff; font-weight: 700; text-align: left; padding: 5px 6px; font-size: 11px; } td { padding: 4px 6px; border-bottom: 1px solid #dfe6f2; }
+tbody tr:nth-child(even) td { background: #f3f7fd; } .c { text-align: center; } td.p { color: #137a3f; font-weight: 700; } td.a { color: #c0392b; font-weight: 700; }
+section + section { page-break-before: always; } .bar { position: sticky; top: 0; background: #fff8e6; border: 1px solid #e2b248; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.bar button { background: #0a2a6e; color: #fff; border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 700; font-size: 14px; cursor: pointer; }
+* { -webkit-print-color-adjust: exact; print-color-adjust: exact; } @media print { .bar { display: none; } body { padding: 0; } }
+</style></head><body>
+<div class="bar"><button onclick="print()">Guardar como PDF</button><span>En la ventana que se abre, escoge <b>“Guardar como PDF”</b> como impresora y guárdalo en tu computadora.</span></div>
+<header><img src="${document.querySelector("img.logo")?.src || ""}" alt=""><div><h1>Respaldo del Discipulado · Iglesia Cristiana Bethesda</h1><div class="muted">Generado el ${e(hoy)} · Nivel 2 (Jorge Flores) y Nivel 3 (Pastor Nery Aldana)</div></div></header>
+${secc}
+<script>setTimeout(function(){ try { print(); } catch (e) {} }, 600);<\/script></body></html>`;
+}
+async function descargarRespaldo() {
+  const w = window.open("", "_blank");
+  if (!w) { toast("Permite las ventanas emergentes para descargar el respaldo"); return; }
+  w.document.write('<p style="font:16px sans-serif;padding:24px">Preparando el respaldo…</p>');
+  const btn = $("#respaldo"); btn.disabled = true; btn.textContent = "Preparando…";
+  try {
+    const niveles = [];
+    for (const n of [3, 2]) { const { ms, al } = await datosNivel(n); niveles.push({ n, ms, al }); }
+    w.document.open(); w.document.write(reporteHTML(niveles)); w.document.close();
+  } catch (e) { w.close(); toast(errMsg(e)); }
+  btn.disabled = false; btn.textContent = "Descargar respaldo (PDF)";
+}
+
 async function paneHistorial() {
   const [ms, alumnos] = await Promise.all([store.clases(60), store.alumnos()]);
   const pane = $("#pane");
@@ -479,10 +531,12 @@ async function paneHistorial() {
     return { ...m, p, n: marked.length, racha, pct: marked.length ? Math.round((p / marked.length) * 100) : null };
   }).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
   pane.innerHTML = `<div class="grid">
+    ${me.rol === "admin" ? `<div class="notice"><span>Guarda una copia de todo el discipulado (nivel 2 y nivel 3) en PDF en tu computadora. Solo tú ves este botón.</span><button class="btn small primary" id="respaldo" type="button">Descargar respaldo (PDF)</button></div>` : ""}
     <div class="stats"><div class="stat"><b>${ms.length}</b><span>Clases</span></div><div class="stat ok"><b>${avg}%</b><span>Asistencia</span></div></div>
     <b>Asistencia por persona</b><p class="sub" style="margin:-8px 0 0">Todas las clases guardadas. Los de menor asistencia salen primero, para saber a quién llamar.</p>
     <div class="list" id="pl"></div>
     <b>Clases</b><div class="list" id="hl"></div></div>`;
+  if ($("#respaldo")) $("#respaldo").onclick = descargarRespaldo;
   per.forEach((m) => {
     const it = document.createElement("div"); it.className = "item";
     it.innerHTML = `<div class="grow"><b>${esc(m.nombre)}</b><small>${m.n ? `Vino ${m.p} de ${m.n}` : "Sin registros"}${m.racha >= 2 ? ` · <span style="color:var(--no);font-weight:700">faltó las últimas ${m.racha}</span>` : ""}</small></div>${m.pct !== null ? `<span class="pct ${m.pct >= 70 ? "good" : m.pct < 50 ? "low" : ""}">${m.pct}%</span>` : ""}`;
