@@ -279,7 +279,9 @@ let store, me, unwatch = null;
 const stopWatch = () => { if (unwatch) { unwatch(); unwatch = null; } };
 const state = { tab: "asistencia", fecha: lastMonday(), loadSaved: false, nivel: 3 };
 const readOnly = () => !["admin", "pastor", "maestro"].includes(me.rol);
-const canPick = () => me.rol === "admin";
+const canPick = () => me.rol === "admin" || me.rol === "pastor";
+// el pastor solo puede ver el nivel 2 (lo maneja Jorge Flores)
+const viewOnly = () => readOnly() || (me.rol === "pastor" && state.nivel === 2);
 const savebar = { el: $("#savebar"), info: $("#savebar-info"), btn: $("#savebar-btn"), show(info, label, fn) { this.info.textContent = info; this.btn.textContent = label; this.btn.onclick = fn; this.btn.disabled = false; this.el.hidden = false; }, hide() { this.el.hidden = true; } };
 
 function errMsg(e) {
@@ -307,7 +309,7 @@ function start() {
   $("#who").hidden = false;
   $("#who-name").innerHTML = `<b>${esc(me.nombre)}</b><br>${esc(ROLES[me.rol] || "")}`;
   $("#logout").onclick = async () => { stopWatch(); await store.signOut(); me = null; $("#who").hidden = true; showLogin(); };
-  state.tab = readOnly() ? "historial" : "asistencia";
+  state.tab = viewOnly() ? "historial" : "asistencia";
   state.fecha = lastMonday(); state.loadSaved = false;
   seed().then(render);
 }
@@ -349,18 +351,18 @@ function showLogin(msg) {
 
 async function render() {
   stopWatch(); savebar.hide();
-  const tabs = readOnly() ? [["historial", "Historial"], ["asistencia", "Ver clase"], ["alumnos", "Alumnos"]] : [["asistencia", "Asistencia"], ["alumnos", "Alumnos"], ["historial", "Historial"]];
+  const tabs = viewOnly() ? [["historial", "Historial"], ["asistencia", "Ver clase"], ["alumnos", "Alumnos"]] : [["asistencia", "Asistencia"], ["alumnos", "Alumnos"], ["historial", "Historial"]];
   if (!tabs.some(([k]) => k === state.tab)) state.tab = tabs[0][0];
   app.innerHTML = `
     ${canPick() ? `<div class="tabs" role="tablist" aria-label="Nivel" style="grid-template-columns:1fr 1fr">${[2, 3].map((n) => `<button role="tab" type="button" data-nivel="${n}" aria-selected="${state.nivel === n}">Nivel ${n}</button>`).join("")}</div>` : ""}
     <div><h2>${NIVELES[state.nivel].titulo} <span class="live" title="Se actualiza solo">● En vivo</span></h2>
-      <p class="sub">${NIVELES[state.nivel].sub}</p></div>
+      <p class="sub">${NIVELES[state.nivel].sub}${me.rol === "pastor" && state.nivel === 2 ? ` · <span class="tag">Solo ver</span>` : ""}</p></div>
     <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" type="button" data-tab="${k}" aria-selected="${state.tab === k}">${l}</button>`).join("")}</div>
     <div id="pane"><div class="empty"><div class="spinner"></div></div></div>`;
   app.querySelectorAll("[data-nivel]").forEach((b) => (b.onclick = () => { const n = Number(b.dataset.nivel); if (n === state.nivel) return; state.nivel = n; try { localStorage.setItem("disc-nivel", String(n)); } catch {} state.fecha = lastMonday(); state.loadSaved = false; seed().then(render); }));
   app.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; if (b.dataset.tab === "asistencia") { state.fecha = lastMonday(); state.loadSaved = false; } render(); }));
   try {
-    if (state.tab === "asistencia") await (readOnly() ? paneVer() : paneAsistencia());
+    if (state.tab === "asistencia") await (viewOnly() ? paneVer() : paneAsistencia());
     else if (state.tab === "alumnos") await paneAlumnos();
     else await paneHistorial();
   } catch (e) { $("#pane").innerHTML = `<div class="empty"><strong>No se pudo cargar</strong>${esc(errMsg(e))}</div>`; }
@@ -435,17 +437,17 @@ async function paneAlumnos() {
   const alumnos = await store.alumnos();
   const pane = $("#pane");
   pane.innerHTML = `<div class="grid">
-    ${readOnly() ? "" : `<form class="card grid" id="addf" novalidate><b>Agregar alumno</b>
+    ${viewOnly() ? "" : `<form class="card grid" id="addf" novalidate><b>Agregar alumno</b>
       <div class="row2"><div class="field"><label for="m-nombre">Nombre</label><input id="m-nombre" autocomplete="off" placeholder="Nombre y apellido"></div>
       <div class="field"><label for="m-tel">Teléfono (opcional)</label><input id="m-tel" type="tel" inputmode="tel" autocomplete="off" placeholder="(845) 000-0000"></div></div>
       <button class="btn primary" type="submit">Agregar</button></form>`}
     <p class="sub" style="margin:0">${plural(alumnos.length, "alumno", "alumnos")} en el discipulado</p>
     <div class="list" id="mlist"></div></div>`;
   const list = $("#mlist");
-  if (!alumnos.length) list.innerHTML = `<div class="empty"><strong>Sin alumnos todavía</strong>${readOnly() ? "El administrador todavía no ha agregado alumnos." : "Escribe el nombre arriba y toca “Agregar”."}</div>`;
+  if (!alumnos.length) list.innerHTML = `<div class="empty"><strong>Sin alumnos todavía</strong>${viewOnly() ? "El administrador todavía no ha agregado alumnos." : "Escribe el nombre arriba y toca “Agregar”."}</div>`;
   alumnos.forEach((m) => {
     const it = document.createElement("div"); it.className = "item";
-    it.innerHTML = `<div class="grow"><b>${esc(m.nombre)}</b>${m.telefono ? `<small>${esc(m.telefono)}</small>` : ""}</div>${readOnly() ? "" : `<button class="btn small" type="button">Editar</button>`}`;
+    it.innerHTML = `<div class="grow"><b>${esc(m.nombre)}</b>${m.telefono ? `<small>${esc(m.telefono)}</small>` : ""}</div>${viewOnly() ? "" : `<button class="btn small" type="button">Editar</button>`}`;
     const eb = it.querySelector("button");
     if (eb) eb.onclick = () => {
       it.innerHTML = `<div class="grow grid" style="gap:8px"><input class="e-n" value="${esc(m.nombre)}" aria-label="Nombre" style="padding:9px 10px;border-radius:9px;border:1px solid var(--line);background:var(--bg)"><input class="e-t" value="${esc(m.telefono)}" aria-label="Teléfono" placeholder="Teléfono" style="padding:9px 10px;border-radius:9px;border:1px solid var(--line);background:var(--bg)">
@@ -468,7 +470,7 @@ async function paneAlumnos() {
 async function paneHistorial() {
   const [ms, alumnos] = await Promise.all([store.clases(60), store.alumnos()]);
   const pane = $("#pane");
-  if (!ms.length) { pane.innerHTML = `<div class="empty"><strong>Todavía no hay clases guardadas</strong>${readOnly() ? "Cuando se pase asistencia, aparecerá aquí." : "Pasa asistencia en la pestaña “Asistencia” y aparecerá aquí."}</div>`; return; }
+  if (!ms.length) { pane.innerHTML = `<div class="empty"><strong>Todavía no hay clases guardadas</strong>${viewOnly() ? "Cuando se pase asistencia, aparecerá aquí." : "Pasa asistencia en la pestaña “Asistencia” y aparecerá aquí."}</div>`; return; }
   const avg = Math.round(ms.reduce((s, m) => s + (m.total ? m.presentes / m.total : 0), 0) / ms.length * 100);
   const per = alumnos.map((m) => {
     const marked = ms.filter((x) => x.asistencia?.[m.id]);
