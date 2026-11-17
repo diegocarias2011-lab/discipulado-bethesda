@@ -196,6 +196,15 @@ async function hashOf(usuario, clave) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("bethesda|" + usuario + "|" + clave));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+// Limpia lo que viene de la base de datos antes de mostrarlo (protección contra datos manipulados)
+function cleanClase(m) {
+  if (!m || !ISO_RE.test(String(m.fecha || ""))) return null;
+  const asistencia = {};
+  Object.entries(m.asistencia && typeof m.asistencia === "object" ? m.asistencia : {}).forEach(([k, v]) => { if (v === "p" || v === "a") asistencia[String(k)] = v; });
+  return { ...m, fecha: String(m.fecha), asistencia, presentes: num(m.presentes), ausentes: num(m.ausentes), total: num(m.total), tema: typeof m.tema === "string" ? m.tema : "" };
+}
 function summarize(m, alumnos) {
   const ids = new Set(alumnos.map((x) => x.id));
   const vals = Object.entries(m.asistencia || {}).filter(([k]) => ids.has(k)).map(([, v]) => v);
@@ -204,10 +213,10 @@ function summarize(m, alumnos) {
 
 /* ---------- modo de prueba (sin Firebase) */
 function demoStore() {
-  const KEY = "discipulado-bethesda-demo2", SKEY = "discipulado-bethesda-sesion";
+  const KEY = "discipulado-bethesda-demo3", SKEY = "discipulado-bethesda-sesion";
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } };
   const save = (x) => { try { localStorage.setItem(KEY, JSON.stringify(x)); } catch {} };
-  let s = load() || { users: { diego: { nombre: "Diego", rol: "admin", clave: "2287" }, nery: { nombre: "Pastor Nery Aldana", rol: "pastor", clave: "bethesda" }, jorgeflores: { nombre: "Jorge Flores", rol: "maestro", nivel: 2, clave: "bethesda" } }, disc_alumnos: [], disc_clases: {}, disc2_alumnos: [], disc2_clases: {} };
+  let s = load() || { users: { "prueba-admin": { nombre: "Administrador (prueba)", rol: "admin", clave: "prueba1234" }, "prueba-pastor": { nombre: "Pastor (prueba)", rol: "pastor", clave: "prueba1234" }, "prueba-maestro": { nombre: "Maestro (prueba)", rol: "maestro", nivel: 2, clave: "prueba1234" } }, disc_alumnos: [], disc_clases: {}, disc2_alumnos: [], disc2_clases: {} };
   const A = () => (s[col("alumnos")] ||= []), K = () => (s[col("clases")] ||= {});
   const clone = (x) => JSON.parse(JSON.stringify(x));
   let me = null;
@@ -217,6 +226,7 @@ function demoStore() {
     async login(u, c) { u = normUser(u); const d = s.users[u]; if (!d || d.clave !== c) throw { code: "bad-login" }; try { localStorage.setItem(SKEY, u); } catch {} return (me = asMe(u)); },
     async current() { let u = null; try { u = localStorage.getItem(SKEY); } catch {} return (me = u ? asMe(u) : null); },
     async signOut() { try { localStorage.removeItem(SKEY); } catch {} },
+    async log() {},
     async alumnos() { return clone(A()).sort(byName); },
     async saveAlumno(a) { const L = A(); if (a.id) { const i = L.findIndex((x) => x.id === a.id); L[i] = { ...L[i], ...a }; } else L.push({ ...a, id: Math.random().toString(36).slice(2, 10) }); save(s); },
     async deleteAlumno(id) { s[col("alumnos")] = A().filter((a) => a.id !== id); save(s); },
@@ -239,16 +249,25 @@ async function firebaseStore(cfg) {
   const ensureAnon = async () => { if (!auth.currentUser) await A.signInAnonymously(auth); return auth.currentUser.uid; };
   const D = (...p) => F.doc(db, ...p);
   const asMe = (u, d) => ({ usuario: u, nombre: d.nombre || u, rol: d.rol, nivel: Number(d.nivel) || null });
+  // Registro de actividad (solo el administrador lo puede leer, desde la página de células)
+  const log = async (tipo, usuario, detalle = "") => {
+    try {
+      await ensureAnon();
+      await F.addDoc(F.collection(db, "registro"), { tipo, usuario: String(usuario || "").slice(0, 40), app: "discipulado", detalle: String(detalle || "").slice(0, 200), agente: String(navigator.userAgent || "").slice(0, 200), uid: auth.currentUser.uid, cuando: F.serverTimestamp() });
+    } catch {}
+  };
   return {
     mode: "firebase",
+    log: (tipo, detalle) => log(tipo, me ? me.usuario : "", detalle),
     async login(usuario, clave) {
       const uid = await ensureAnon();
       const u = normUser(usuario);
       if (!USER_RE.test(u)) throw { code: "bad-login" };
       const hash = await hashOf(u, clave);
-      try { await F.setDoc(D("sesiones", uid), { usuario: u, hash, creado: new Date().toISOString() }); }
-      catch (e) { if (String(e.code || "").includes("permission")) throw { code: "bad-login" }; throw e; }
+      try { await F.setDoc(D("sesiones", uid), { usuario: u, hash, creado: F.serverTimestamp() }); }
+      catch (e) { if (String(e.code || "").includes("permission")) { await log("login_fallido", u); throw { code: "bad-login" }; } throw e; }
       const d = await F.getDoc(D("usuarios", u));
+      await log("login_ok", u);
       return asMe(u, d.data());
     },
     async current() {
@@ -256,20 +275,23 @@ async function firebaseStore(cfg) {
       try {
         const sd = await F.getDoc(D("sesiones", auth.currentUser.uid));
         if (!sd.exists()) return null;
+        // La sesión dura 14 días (la base de datos también lo exige)
+        const cr = sd.data().creado;
+        if (!cr || !cr.toDate || Date.now() - cr.toDate().getTime() > 14 * 864e5) { try { await F.deleteDoc(D("sesiones", auth.currentUser.uid)); } catch {} return null; }
         const u = sd.data().usuario;
         const ud = await F.getDoc(D("usuarios", u));
         if (!ud.exists() || ud.data().hash !== sd.data().hash) return null;
         return asMe(u, ud.data());
       } catch { return null; }
     },
-    async signOut() { try { await F.deleteDoc(D("sesiones", auth.currentUser.uid)); } catch {} },
+    async signOut() { if (me) await log("salida", me.usuario); try { await F.deleteDoc(D("sesiones", auth.currentUser.uid)); } catch {} },
     async alumnos() { const sn = await F.getDocs(F.collection(db, col("alumnos"))); return sn.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byName); },
     async saveAlumno(a) { const { id, ...body } = a; if (id) await F.setDoc(D(col("alumnos"), id), body, { merge: true }); else await F.addDoc(F.collection(db, col("alumnos")), body); },
     async deleteAlumno(id) { await F.deleteDoc(D(col("alumnos"), id)); },
-    async clase(f) { const d = await F.getDoc(D(col("clases"), f)); return d.exists() ? d.data() : null; },
+    async clase(f) { const d = await F.getDoc(D(col("clases"), f)); return d.exists() ? cleanClase(d.data()) : null; },
     async saveClase(f, data) { await F.setDoc(D(col("clases"), f), data); },
-    async deleteClase(f) { await F.deleteDoc(D(col("clases"), f)); },
-    async clases(n = 60) { const sn = await F.getDocs(F.query(F.collection(db, col("clases")), F.orderBy("fecha", "desc"), F.limit(n))); return sn.docs.map((d) => d.data()); },
+    async deleteClase(f) { await F.deleteDoc(D(col("clases"), f)); await log("clase_borrada", me ? me.usuario : "", "Nivel " + state.nivel + " " + f); },
+    async clases(n = 60) { const sn = await F.getDocs(F.query(F.collection(db, col("clases")), F.orderBy("fecha", "desc"), F.limit(n))); return sn.docs.map((d) => cleanClase(d.data())).filter(Boolean); },
     watch(cb) { let first = true; return F.onSnapshot(F.collection(db, col("clases")), () => { if (first) { first = false; return; } cb(); }, () => {}); },
   };
 }
@@ -337,7 +359,7 @@ function showLogin(msg) {
     <label class="sub" style="display:flex;gap:6px;align-items:center;justify-self:start;margin:0"><input type="checkbox" id="l-show"> Mostrar clave</label>
     <button class="btn primary" type="submit" style="width:100%">Entrar</button>
     <p class="err" id="l-err" ${msg ? "" : "hidden"}>${esc(msg || "")}</p>
-    ${store.mode === "demo" ? `<div class="hint">Usuarios de prueba: <b>diego</b> / 2287 · <b>nery</b> / bethesda · <b>jorge flores</b> / bethesda</div>` : ""}
+    ${store.mode === "demo" ? `<div class="hint">Modo de prueba: <b>prueba-admin</b>, <b>prueba-pastor</b> o <b>prueba-maestro</b>, clave prueba1234</div>` : ""}
   </form></div>`;
   $("#l-show").onchange = (e) => ($("#l-pass").type = e.target.checked ? "text" : "password");
   setTimeout(() => $("#l-user").focus(), 30);
@@ -501,10 +523,10 @@ section + section { page-break-before: always; } .bar { position: sticky; top: 0
 .bar button { background: #0a2a6e; color: #fff; border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 700; font-size: 14px; cursor: pointer; }
 * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } @media print { .bar { display: none; } body { padding: 0; } }
 </style></head><body>
-<div class="bar"><button onclick="print()">Guardar como PDF</button><span>En la ventana que se abre, escoge <b>“Guardar como PDF”</b> como impresora y guárdalo en tu computadora.</span></div>
+<div class="bar"><button type="button" id="imprimir">Guardar como PDF</button><span>En la ventana que se abre, escoge <b>“Guardar como PDF”</b> como impresora y guárdalo en tu computadora.</span></div>
 <header><img src="${document.querySelector("img.logo")?.src || ""}" alt=""><div><h1>Respaldo del Discipulado · Iglesia Cristiana Bethesda</h1><div class="muted">Generado el ${e(hoy)} · Nivel 2 (Jorge Flores) y Nivel 3 (Pastor Nery Aldana)</div></div></header>
 ${secc}
-<script>setTimeout(function(){ try { print(); } catch (e) {} }, 600);<\/script></body></html>`;
+</body></html>`;
 }
 async function descargarRespaldo() {
   const w = window.open("", "_blank");
@@ -515,6 +537,9 @@ async function descargarRespaldo() {
     const niveles = [];
     for (const n of [3, 2]) { const { ms, al } = await datosNivel(n); niveles.push({ n, ms, al }); }
     w.document.open(); w.document.write(reporteHTML(niveles)); w.document.close();
+    const pb = w.document.getElementById("imprimir"); if (pb) pb.addEventListener("click", () => w.print());
+    setTimeout(() => { try { w.focus(); w.print(); } catch {} }, 600);
+    store.log("respaldo_pdf", "discipulado");
   } catch (e) { w.close(); toast(errMsg(e)); }
   btn.disabled = false; btn.textContent = "Descargar respaldo (PDF)";
 }
